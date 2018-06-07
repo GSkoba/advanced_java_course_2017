@@ -5,7 +5,7 @@ import java.io.IOException;
 /**
  * Логирование исключений
  */
-class LogUtils {
+public class LogUtils {
     static void logException(String s, IOException e) {
         System.err.println(s);
         e.printStackTrace();

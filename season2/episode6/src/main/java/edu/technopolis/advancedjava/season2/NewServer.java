@@ -12,30 +12,26 @@ import java.util.Map;
 import java.util.Set;
 
 import com.sun.istack.internal.NotNull;
+import edu.technopolis.advancedjava.season2.stages.AuthReadStage;
+import edu.technopolis.advancedjava.season2.stages.IStage;
 
-/**
- * Сервер, построенный на API java.nio.* . Работает единственный поток,
- * обрабатывающий события, полученные из селектора.
- * Нельзя блокировать или нагружать долгоиграющими действиями данный поток, потому что это
- * замедлит обработку соединений.
- */
+import static edu.technopolis.advancedjava.season2.stages.Utils.BUFFER_SIZE;
+
 public class NewServer {
     public static void main(String[] args) {
-        Map<SocketChannel, ByteBuffer> map = new HashMap<>();
+        Map<SocketChannel, IStage> map = new HashMap<>();
         try (ServerSocketChannel serverChannel = ServerSocketChannel.open();
-             Selector selector = Selector.open()){
+             Selector selector = Selector.open()) {
             serverChannel.configureBlocking(false);
             serverChannel.bind(new InetSocketAddress(10001));
             serverChannel.register(selector, SelectionKey.OP_ACCEPT);
             while (true) {
-                selector.select(); //блокирующий вызов
+                selector.select();
                 @NotNull
                 Set<SelectionKey> keys = selector.selectedKeys();
                 if (keys.isEmpty()) {
                     continue;
                 }
-                //при обработке ключей из множества selected, необходимо обязательно очищать множество.
-                //иначе те же ключи могут быть обработаны снова
                 keys.removeIf(key -> {
                     if (!key.isValid()) {
                         return true;
@@ -44,20 +40,19 @@ public class NewServer {
                         return accept(map, key);
                     }
                     if (key.isReadable()) {
-                        //Внимание!!!
-                        //Важно, чтобы при обработке не было долгоиграющих (например, блокирующих операций),
-                        //поскольку текущий поток занимается диспетчеризацией каналов и должен быть всегда доступен
-                        return read(map, key);
+                        map.get(key.channel()).proceed(SelectionKey.OP_READ, selector, map);
+                        return true;
+                    }
+                    if(key.isConnectable()){
+                        map.get(key.channel()).proceed(SelectionKey.OP_CONNECT, selector, map);
+                        return true;
                     }
                     if (key.isWritable()) {
-                        //Внимание!!!
-                        //Важно, чтобы при обработке не было долгоиграющих (например, блокирующих операций),
-                        //поскольку текущий поток занимается диспетчеризацией каналов и должен быть всегда доступен
-                        return write(map, key);
+                        map.get(key.channel()).proceed(SelectionKey.OP_WRITE, selector, map);
+                        return true;
                     }
                     return true;
                 });
-                //удаление закрытых каналов из списка обрабатываемых
                 map.keySet().removeIf(channel -> !channel.isOpen());
             }
 
@@ -66,38 +61,15 @@ public class NewServer {
         }
     }
 
-    private static boolean write(Map<SocketChannel, ByteBuffer> map, SelectionKey key) {
-        SocketChannel channel = (SocketChannel) key.channel();
-        ByteBuffer buffer = map.get(channel);
-        try {
-            while (buffer.hasRemaining()) {
-                channel.write(buffer);
-            }
-            buffer.compact();
-            key.interestOps(SelectionKey.OP_READ);
-        } catch (IOException e) {
-            closeChannel(channel);
-            e.printStackTrace();
-        }
-        return true;
-    }
 
-    private static boolean read(Map<SocketChannel, ByteBuffer> map, SelectionKey key) {
-        SocketChannel channel = (SocketChannel) key.channel();
-        if (handleSocketChannel(channel, map.get(channel))) {
-            key.interestOps(SelectionKey.OP_WRITE);
-        }
-        return true;
-    }
-
-    private static boolean accept(Map<SocketChannel, ByteBuffer> map, SelectionKey key) {
+    private static boolean accept(Map<SocketChannel, IStage> map, SelectionKey key) {
         ServerSocketChannel serverChannel = (ServerSocketChannel) key.channel();
         SocketChannel channel = null;
         try {
-            channel = serverChannel.accept(); //non-blocking call
+            channel = serverChannel.accept();
             channel.configureBlocking(false);
             channel.register(key.selector(), SelectionKey.OP_READ);
-            map.put(channel, ByteBuffer.allocateDirect(80));
+            map.put(channel, new AuthReadStage(channel, ByteBuffer.allocate(BUFFER_SIZE)));
         } catch (IOException e) {
             LogUtils.logException("Failed to process channel " + channel, e);
             if (channel != null) {
@@ -105,32 +77,6 @@ public class NewServer {
             }
         }
         return true;
-    }
-
-    private static boolean handleSocketChannel(SocketChannel channel, ByteBuffer bb) {
-        try {
-            int bytesRead = channel.read(bb);
-            if (bytesRead == 0) {
-                return false;
-            }
-            if (bytesRead == -1) {
-                closeChannel(channel);
-                return false;
-            }
-            bb.flip();
-            doMagic(bb);
-            return true;
-        } catch (IOException e) {
-            LogUtils.logException("Failed to read data from channel " + channel, e);
-            closeChannel(channel);
-            return false;
-        }
-    }
-
-    private static void doMagic(ByteBuffer bb) {
-        for (int index = bb.position(); index < bb.limit(); index++) {
-            bb.put(index, (byte) doMagic(bb.get(index)));
-        }
     }
 
     private static void closeChannel(SocketChannel accept) {
@@ -141,9 +87,4 @@ public class NewServer {
         }
     }
 
-    private static int doMagic(int data) {
-        return Character.isLetter(data)
-                ? data ^ ' '
-                : data;
-    }
 }
