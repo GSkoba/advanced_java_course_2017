@@ -5,6 +5,7 @@ import java.math.BigInteger;
 /**
  * Это класс с тестами для проверки работоспособности кода домашнего задания.
  *
+ *
  */
 import static edu.technopolis.HugeNumber.FibonacciNumber;
 public class Test {
